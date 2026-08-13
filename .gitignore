@@ -8,7 +8,12 @@ temp.properties
 .env.*
 docs/projekt/
 
+# Tokens (NEVER commit these!)
+github-token.txt
+gitlab-token.txt
+
 # Local agent/runtime artifacts
 /codex-session
 /os
 /sys
+graphify-out/
