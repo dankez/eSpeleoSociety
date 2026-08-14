@@ -28,6 +28,12 @@ SECRET_SETUP_FIELDS = [
     ("log_level", "Log level:"),
     ("ecp_signing_key_id", "eCP signing key ID:"),
     ("ecp_signing_private_key_b64", "eCP signing private key (base64 PEM):"),
+    ("ftp_host", "FTP Host:"),
+    ("ftp_port", "FTP Port:"),
+    ("ftp_user", "FTP User:"),
+    ("ftp_password", "FTP Password:"),
+    ("ftp_base_dir", "FTP Base directory:"),
+    ("ftp_use_tls", "FTP Use TLS (true/false):"),
 ]
 
 SENSITIVE_SECRET_FIELDS = {
@@ -35,6 +41,7 @@ SENSITIVE_SECRET_FIELDS = {
     "crypt_key",
     "ecp_signing_private_key_b64",
     "smtp_password",
+    "ftp_password",
 }
 
 class PinDialog(QDialog):
