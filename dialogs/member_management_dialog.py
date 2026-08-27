@@ -9,6 +9,7 @@ from PyQt5.QtCore import Qt, QDate
 from PyQt5.QtGui import QPixmap, QIcon
 import db
 from face_detection import prepare_portrait_upload
+from dialogs.portrait_crop_dialog import PortraitCropDialog
 from model import Club, Member
 from utils import (
     get_state_pixmap, get_icon, load_image_from_url, show_warning_message,
@@ -351,7 +352,28 @@ class MemberManagementDialog(QDialog):
         if not filename:
             return
 
-        result = prepare_portrait_upload(filename)
+        analysis = prepare_portrait_upload(filename)
+        if not analysis.is_usable:
+            show_warning_message(analysis.message)
+            return
+
+        crop_box = analysis.suggested_crop
+        try:
+            crop_dialog = PortraitCropDialog(
+                filename,
+                face_box=analysis.face_box,
+                suggested_crop=analysis.suggested_crop,
+                parent=self,
+            )
+        except ValueError as exc:
+            show_warning_message(str(exc))
+            return
+
+        if crop_dialog.exec_() != QDialog.Accepted:
+            return
+        crop_box = crop_dialog.crop_box()
+
+        result = prepare_portrait_upload(filename, crop_box=crop_box)
         if not result.is_usable:
             show_warning_message(result.message)
             return
@@ -360,7 +382,7 @@ class MemberManagementDialog(QDialog):
             reply = QMessageBox.question(
                 self,
                 self.tr("Face Detection"),
-                self.tr(result.message + "\nDo you want to use this portrait anyway?"),
+                self.tr("%1\nDo you want to use this portrait anyway?").replace("%1", result.message),
                 QMessageBox.Yes | QMessageBox.No,
             )
             if reply != QMessageBox.Yes:

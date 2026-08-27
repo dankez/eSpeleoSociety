@@ -67,6 +67,32 @@ not a design change. Treat it as such (see the hard rules in `SKILL.md`).
 When you add a field to the card, route it through `_fit_text` like the existing
 rows in the `rows` list, never through a bare `draw.text`.
 
+## Portrait pipeline
+
+`face_detection.py` is Qt-free and owns all portrait geometry, so it is testable
+without a display and reusable from the backend.
+
+- `PORTRAIT_ASPECT_RATIO` is derived from `PORTRAIT_BOX` (220 / 300). Any crop
+  produced by the app uses this ratio so the portrait fills the card frame
+  instead of being letterboxed by `_fit_image`.
+- `detect_faces(image) -> (boxes, message)` never raises and never blocks an
+  upload. It selects a backend at runtime:
+  Haar (`cv2.CascadeClassifier`, OpenCV 4) → YuNet (`cv2.FaceDetectorYN`,
+  OpenCV 5, needs `models/face_detection_yunet_2023mar.onnx` or the
+  `ESPELEO_FACE_MODEL` env var) → an actionable message.
+  **OpenCV 5 removed `CascadeClassifier` and ships no cascade XML**, which is why
+  `requirements.txt` pins `opencv-python-headless<5`.
+- `compute_face_crop_box` frames head and shoulders (face ≈ 62 % of the crop
+  height, ~22 % headroom above it), clamped into the image. Without a face it
+  falls back to `compute_center_crop_box`.
+- `prepare_portrait_upload(path, crop_box=None, auto_crop=False)` applies the
+  crop before resizing to `MAX_PORTRAIT_SIZE` and always returns `face_box` and
+  `suggested_crop` so the UI can pre-position its crop frame.
+- `dialogs/portrait_crop_dialog.py` is the only Qt part: an aspect-locked,
+  draggable frame with "Auto-crop to face" and "Center". It must stay a thin
+  wrapper — put new geometry in `face_detection.py` and cover it with
+  `tests/test_portrait_crop.py`.
+
 ## Remaining design debt
 
 - **Card labels are hardcoded Slovak strings** (with correct diacritics).
