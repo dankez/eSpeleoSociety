@@ -13,6 +13,21 @@ CARD_SIZE = (1011, 638)
 PORTRAIT_BOX = (72, 166, 292, 466)
 QR_BOX = (735, 154, 960, 379)
 
+TEXT_COLUMN_X = 330
+TEXT_COLUMN_GAP = 24
+TEXT_COLUMN_MAX_WIDTH = QR_BOX[0] - TEXT_COLUMN_X - TEXT_COLUMN_GAP
+CARD_SIDE_MARGIN = 40
+QR_NOTE_MAX_WIDTH = CARD_SIZE[0] - QR_BOX[0] - CARD_SIDE_MARGIN
+
+STATUS_LABELS = {
+    "active": "Aktívny",
+    "inactive": "Neaktívny",
+    "suspended": "Pozastavený",
+    "expired": "Vypršaný",
+    "banned": "Zablokovaný",
+    "pending": "Čakajúci",
+}
+
 
 def public_gcs_url(bucket_name: str, blob_name: str) -> str:
     return f"https://storage.googleapis.com/{bucket_name}/{blob_name}"
@@ -22,10 +37,30 @@ def _format_date(value) -> str:
     if value is None:
         return ""
     if isinstance(value, datetime):
-        value = value.date()
+        return value.date().isoformat()
     if isinstance(value, date):
         return value.isoformat()
-    return str(value)
+    text = str(value).strip()
+    if not text:
+        return ""
+    candidate = text.replace("Z", "+00:00") if text.endswith("Z") else text
+    try:
+        return datetime.fromisoformat(candidate).date().isoformat()
+    except ValueError:
+        pass
+    try:
+        return date.fromisoformat(candidate[:10]).isoformat()
+    except ValueError:
+        return text
+
+
+def _format_status(value) -> str:
+    if value is None:
+        return ""
+    text = str(value).strip()
+    if not text:
+        return ""
+    return STATUS_LABELS.get(text.lower(), text)
 
 
 def _member_display_name(member) -> str:
@@ -38,15 +73,88 @@ def _member_display_name(member) -> str:
     return " ".join(str(part).strip() for part in parts if part and str(part).strip())
 
 
-def _font(size: int, bold: bool = False):
+def _font_candidates(bold: bool) -> list[str]:
+    bundled_dir = Path(__file__).parent / "images" / "fonts"
+    name = "DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf"
     candidates = [
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf" if bold else "/usr/share/fonts/dejavu/DejaVuSans.ttf",
+        str(bundled_dir / name),
+        f"/usr/share/fonts/truetype/dejavu/{name}",
+        f"/usr/share/fonts/dejavu/{name}",
+        f"C:/Windows/Fonts/{name}",
+        "C:/Windows/Fonts/arialbd.ttf" if bold else "C:/Windows/Fonts/arial.ttf",
+        "C:/Windows/Fonts/segoeuib.ttf" if bold else "C:/Windows/Fonts/segoeui.ttf",
+        "/System/Library/Fonts/Supplemental/Arial Bold.ttf" if bold else "/System/Library/Fonts/Supplemental/Arial.ttf",
+        "/Library/Fonts/Arial Bold.ttf" if bold else "/Library/Fonts/Arial.ttf",
     ]
-    for candidate in candidates:
+    return candidates
+
+
+def _font(size: int, bold: bool = False):
+    for candidate in _font_candidates(bold):
         if Path(candidate).exists():
-            return ImageFont.truetype(candidate, size=size)
-    return ImageFont.load_default()
+            try:
+                return ImageFont.truetype(candidate, size=size)
+            except OSError:
+                continue
+    try:
+        return ImageFont.load_default(size=size)
+    except TypeError:  # Pillow < 10.1 has no size argument
+        return ImageFont.load_default()
+
+
+def _text_width(draw: ImageDraw.ImageDraw, text: str, font) -> float:
+    return draw.textlength(text, font=font)
+
+
+def _fit_text(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    max_width: int,
+    size: int,
+    bold: bool = False,
+    min_size: int = 12,
+) -> tuple[str, "ImageFont.ImageFont"]:
+    """Shrink then ellipsize ``text`` so it never exceeds ``max_width``.
+
+    Overflow here is not cosmetic: the text column sits directly left of the QR
+    box, so an unbounded string is painted across the QR modules and makes the
+    card unscannable.
+    """
+    text = "" if text is None else str(text)
+    font = _font(size, bold)
+    if not text:
+        return text, font
+
+    current_size = size
+    while current_size > min_size and _text_width(draw, text, font) > max_width:
+        current_size -= 1
+        font = _font(current_size, bold)
+
+    if _text_width(draw, text, font) <= max_width:
+        return text, font
+
+    ellipsis = "..."
+    truncated = text
+    while truncated and _text_width(draw, truncated + ellipsis, font) > max_width:
+        truncated = truncated[:-1]
+    return (truncated + ellipsis) if truncated else ellipsis, font
+
+
+def _wrap_text(draw: ImageDraw.ImageDraw, text: str, max_width: int, font) -> list[str]:
+    words = str(text).split()
+    if not words:
+        return []
+    lines: list[str] = []
+    current = words[0]
+    for word in words[1:]:
+        candidate = f"{current} {word}"
+        if _text_width(draw, candidate, font) <= max_width:
+            current = candidate
+        else:
+            lines.append(current)
+            current = word
+    lines.append(current)
+    return lines
 
 
 def _fit_image(image: Image.Image, target_size: tuple[int, int]) -> Image.Image:
@@ -79,7 +187,7 @@ def build_ecp_card_assets(member, club, issued_qr, portrait_image: bytes | None 
     draw.rectangle((0, 0, CARD_SIZE[0], 112), fill="#0b4a46")
     draw.rectangle((0, 112, CARD_SIZE[0], 124), fill="#d5a93f")
     draw.text((56, 34), "eSpeleoSociety eCP", fill="white", font=_font(36, True))
-    draw.text((56, 78), "Elektronicky clensky preukaz", fill="#dbe8e4", font=_font(19))
+    draw.text((56, 78), "Elektronický členský preukaz", fill="#dbe8e4", font=_font(19))
 
     # SSS Logo in header
     logo_path = Path(__file__).parent / "images" / "Logo_sss.png"
@@ -90,7 +198,7 @@ def build_ecp_card_assets(member, club, issued_qr, portrait_image: bytes | None 
             with Image.open(logo_path) as logo_img:
                 logo_img = logo_img.convert("RGBA")
                 logo_img.thumbnail((140, 80), Image.Resampling.LANCZOS)
-                card.paste(logo_img, (CARD_SIZE[0] - logo_img.width - 40, 16), logo_img)
+                card.paste(logo_img, (CARD_SIZE[0] - logo_img.width - CARD_SIDE_MARGIN, 16), logo_img)
         except Exception:
             pass
 
@@ -99,25 +207,36 @@ def build_ecp_card_assets(member, club, issued_qr, portrait_image: bytes | None 
     card.paste(portrait, (PORTRAIT_BOX[0], PORTRAIT_BOX[1]))
     draw.rectangle(PORTRAIT_BOX, outline="#6f7d82", width=2)
 
+    display_name = _member_display_name(member) or "Člen"
+    club_name = getattr(club, "name", "") or ""
+    claim = issued_qr.payload.get("claim", {})
+
+    rows = [
+        (168, display_name, 34, True, "#10201f"),
+        (216, f"Klub: {club_name}", 22, False, "#243533"),
+        (258, f"Stav: {_format_status(claim.get('status'))}", 22, False, "#243533"),
+        (300, f"Členské ID: {claim.get('member_id', '')}", 22, False, "#243533"),
+        (342, f"Platnosť do: {_format_date(claim.get('valid_until'))}", 22, True, "#243533"),
+        (384, f"Vydané: {_format_date(claim.get('issued_at'))}", 18, False, "#526260"),
+    ]
+    for y, text, size, bold, fill in rows:
+        fitted, font = _fit_text(draw, text, TEXT_COLUMN_MAX_WIDTH, size, bold)
+        draw.text((TEXT_COLUMN_X, y), fitted, fill=fill, font=font)
+
+    # Drawn after the text column so a text overflow can never corrupt the QR.
     qr = Image.open(BytesIO(issued_qr.qr_png)).convert("RGB")
     qr = qr.resize((QR_BOX[2] - QR_BOX[0], QR_BOX[3] - QR_BOX[1]), Image.Resampling.NEAREST)
     card.paste(qr, (QR_BOX[0], QR_BOX[1]))
     draw.rectangle(QR_BOX, outline="#0b4a46", width=2)
 
-    display_name = _member_display_name(member) or "Clen"
-    club_name = getattr(club, "name", "") or ""
-    claim = issued_qr.payload.get("claim", {})
+    qr_note_font = _font(16)
+    qr_note_y = QR_BOX[3] + 25
+    for line in _wrap_text(draw, "Rovnaký QR platí pre JPG, PDF aj Wallet.", QR_NOTE_MAX_WIDTH, qr_note_font):
+        draw.text((QR_BOX[0], qr_note_y), line, fill="#243533", font=qr_note_font)
+        qr_note_y += 22
 
-    draw.text((330, 168), display_name, fill="#10201f", font=_font(34, True))
-    draw.text((330, 216), f"Klub: {club_name}", fill="#243533", font=_font(22))
-    draw.text((330, 258), f"Status: {claim.get('status', '')}", fill="#243533", font=_font(22))
-    draw.text((330, 300), f"Clenske ID: {claim.get('member_id', '')}", fill="#243533", font=_font(22))
-    draw.text((330, 342), f"Platnost do: {_format_date(claim.get('valid_until'))}", fill="#243533", font=_font(22, True))
-    draw.text((330, 384), f"Vydane: {_format_date(claim.get('issued_at'))}", fill="#526260", font=_font(18))
-
-    draw.text((735, 404), "Rovnaky QR plati pre JPG, PDF aj Wallet.", fill="#243533", font=_font(16))
-    draw.text((56, 552), "Offline QR obsahuje iba minimalne podpisane udaje a online kontrolny link.", fill="#526260", font=_font(17))
-    draw.text((56, 582), "Online detail je tokenizovana staticka stranka bez verejneho indexovania.", fill="#526260", font=_font(17))
+    draw.text((56, 552), "Offline QR obsahuje iba minimálne podpísané údaje a online kontrolný link.", fill="#526260", font=_font(17))
+    draw.text((56, 582), "Online detail je tokenizovaná statická stránka bez verejného indexovania.", fill="#526260", font=_font(17))
 
     image_buffer = BytesIO()
     card.save(image_buffer, format="JPEG", quality=92, optimize=True)
