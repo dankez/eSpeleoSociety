@@ -502,21 +502,36 @@ def get_state_pixmap(member: 'Member', club: 'Club') -> QPixmap:
     return composite
 
 def upload_to_bucket(blob_name: str, data: bytes, content_type: str) -> str:
-    """Uploads data to GCS and returns the public URL."""
-    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = secret_manager.get_secret("credentials_json")
-    project_id = secret_manager.get_secret("project_id")
-    bucket_name = secret_manager.get_secret("bucket_name")
+    """Uploads data to GCS and returns the public URL.
 
-    if not all([project_id, bucket_name, secret_manager.get_secret("credentials_json")]):
-        print("GCS config missing (project_id, bucket_name, or credentials_json). Cannot upload.")
-        return None
-
-    storage = _get_storage_module()
-    client = storage.Client(project=project_id)
-    bucket = client.bucket(bucket_name)
-    
-    blob = bucket.blob(blob_name)
+    Never raises: any GCS/config failure (missing credentials file, unreachable
+    network, etc.) is logged and reported as a failed upload (``None``) so a
+    broken cloud setup cannot crash an otherwise successful save.
+    """
+    bucket_name = None
     try:
+        credentials_path = secret_manager.get_secret("credentials_json")
+        project_id = secret_manager.get_secret("project_id")
+        bucket_name = secret_manager.get_secret("bucket_name")
+
+        if not all([project_id, bucket_name, credentials_path]):
+            print("GCS config missing (project_id, bucket_name, or credentials_json). Cannot upload.")
+            return None
+
+        if not os.path.isfile(credentials_path):
+            print(
+                f"GCS credentials file '{credentials_path}' was not found. "
+                "Cannot upload; check credentials_json configuration."
+            )
+            return None
+
+        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = credentials_path
+
+        storage = _get_storage_module()
+        client = storage.Client(project=project_id)
+        bucket = client.bucket(bucket_name)
+
+        blob = bucket.blob(blob_name)
         blob.upload_from_string(data, content_type=content_type)
         blob.make_public() # Ensure the blob is publicly readable
         public_url = f"https://storage.googleapis.com/{bucket_name}/{blob_name}"
