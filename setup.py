@@ -1,7 +1,9 @@
+import json
 import os
 from PyQt5.QtWidgets import ( QApplication,
-    QWidget, QLabel, QLineEdit, QPushButton, QVBoxLayout,
-    QComboBox, QFormLayout, QMessageBox, QDialog, QDialogButtonBox, QGridLayout
+    QWidget, QLabel, QLineEdit, QPushButton, QVBoxLayout, QHBoxLayout,
+    QComboBox, QFormLayout, QMessageBox, QDialog, QDialogButtonBox, QGridLayout,
+    QFileDialog,
 ) # Add QFont
 from PyQt5.QtCore import Qt, QTimer
 from config import secret_manager # Import the global secret_manager
@@ -38,6 +40,7 @@ SECRET_SETUP_FIELDS = [
 
 SENSITIVE_SECRET_FIELDS = {
     "db_password",
+    "credentials_json",
     "crypt_key",
     "ecp_signing_private_key_b64",
     "smtp_password",
@@ -171,6 +174,8 @@ class SecretSetupGUI(QWidget):
                 entry = QComboBox()
                 entry.addItems(["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"])
                 entry.setMinimumWidth(500)
+                grid.addWidget(label, row, 0)
+                grid.addWidget(entry, row, 1)
             else:
                 entry = QLineEdit()
                 entry.setFixedHeight(32) # Increase field height
@@ -178,14 +183,68 @@ class SecretSetupGUI(QWidget):
                 entry.setAlignment(Qt.AlignLeft)
                 if key in SENSITIVE_SECRET_FIELDS:
                     entry.setEchoMode(QLineEdit.Password)
-            grid.addWidget(label, row, 0)
-            grid.addWidget(entry, row, 1)
+                grid.addWidget(label, row, 0)
+                if key == "credentials_json":
+                    field_row = QHBoxLayout()
+                    field_row.addWidget(entry)
+                    browse_button = QPushButton(self.tr("Import JSON key file..."))
+                    browse_button.clicked.connect(self.import_credentials_json)
+                    field_row.addWidget(browse_button)
+                    grid.addLayout(field_row, row, 1)
+                else:
+                    grid.addWidget(entry, row, 1)
             self.entries[key] = entry
             row += 1
 
         self.save_button = QPushButton(self.tr("Save"))
         self.save_button.clicked.connect(self.save_secrets)
         layout.addWidget(self.save_button)
+
+    def import_credentials_json(self):
+        """Import a GCP service account key file so its content lives inside
+        the encrypted secrets.properties instead of relying on an external
+        file path that can go missing on another machine."""
+        filename, _ = QFileDialog.getOpenFileName(
+            self,
+            self.tr("Select GCP service account JSON key"),
+            "",
+            self.tr("JSON files (*.json)"),
+        )
+        if not filename:
+            return
+
+        try:
+            with open(filename, "r", encoding="utf-8") as key_file:
+                content = key_file.read()
+            parsed = json.loads(content)
+        except (OSError, ValueError) as exc:
+            QMessageBox.critical(
+                self,
+                self.tr("Error"),
+                self.tr("Could not read a valid JSON key file: %s") % exc,
+            )
+            return
+
+        if parsed.get("type") != "service_account":
+            QMessageBox.warning(
+                self,
+                self.tr("Warning"),
+                self.tr(
+                    "This does not look like a GCP service account key "
+                    "(missing \"type\": \"service_account\"). It was imported anyway; "
+                    "double-check the file if uploads keep failing."
+                ),
+            )
+
+        self.entries["credentials_json"].setText(json.dumps(parsed))
+        if "project_id" in parsed and not self.entries["project_id"].text():
+            self.entries["project_id"].setText(parsed["project_id"])
+        QMessageBox.information(
+            self,
+            self.tr("Imported"),
+            self.tr("The key content was loaded. Click Save to store it encrypted."),
+        )
+
 
         self.setLayout(layout)
 

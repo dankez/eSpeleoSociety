@@ -20,6 +20,20 @@ Projekt je momentalne v prechodnom stave: desktop klient stale pristupuje priamo
 
 Ak neexistuje zasifrovany subor secrets, aplikacia najprv otvori setup dialog pre DB, Google Cloud a eCP podpisovacie nastavenia.
 
+### Google Cloud Storage credentials (nahravanie fotiek/log)
+
+Pole `JSON credentials` v setup dialogu (`setup.py`) prijima **obsah** GCP
+service account kluca (JSON subor stiahnuty z Google Cloud Console ->
+IAM & Admin -> Service Accounts -> Keys -> Add key -> JSON), nie iba cestu k
+nemu. Pouzi tlacidlo **"Import JSON key file..."** a vyber stiahnuty `.json`
+subor - jeho obsah sa ulozi priamo v zasifrovanom `secrets.properties`, takze
+uz nemoze zmiznut pri prenose na iny pocitac (predosla nezhoda: povodne sa
+ukladala iba cesta/nazov suboru, ktory bez fyzickeho .json vedla k
+`DefaultCredentialsError` / "credentials file was not found").
+
+Stara forma (cesta k `.json` suboru na disku) stale funguje kvoli spatnej
+kompatibilite, ale odporuca sa import obsahu.
+
 ## Testy
 
 ```bash
