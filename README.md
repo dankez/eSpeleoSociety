@@ -29,6 +29,7 @@ ktory je **cely v `.gitignore`** - nikdy sa necommituje:
 |---|---|
 | `config/secrets.properties` | zasifrovane tajomstva (DB, GCP, eCP podpisovy kluc), odomyka sa PIN-om |
 | `config/config.properties` | nastavenia aplikacie (jazyk, bankove udaje, ...) |
+| `config/table_layouts.json` | sirky, poradie, skryte stlpce a zoradenie tabuliek |
 
 Staticke zdroje potrebne pre cerstvy klon (`translate/`, `docs/api/openapi.yaml`,
 `.github/workflows/`) zostavaju na svojom mieste a su naďalej verzovane.
@@ -62,8 +63,26 @@ ukladala iba cesta/nazov suboru, ktory bez fyzickeho .json vedla k
 Stara forma (cesta k `.json` suboru na disku) stale funguje kvoli spatnej
 kompatibilite, ale odporuca sa import obsahu.
 
-## Testy
+## Tabulky (zoznam klubov, clenov, eCP ziadosti, ...)
 
+Vsetky tabulky maju rovnake, standardne spravanie (`ui_table.py` + `table_layout.py`):
+
+- **sirka stlpca** - potiahnutim deliaca ciara v hlavicke; dvojklik na nu prisposobi stlpec obsahu,
+- **poradie stlpcov** - potiahnutim hlavicky stlpca,
+- **zoradenie** - klik na hlavicku (cisla a datumy sa radia spravne, nie ako text),
+- **skryvanie stlpcov** - tlacidlo **"Columns ▾"** alebo pravy klik na hlavicku;
+  tam je aj *Fit columns to contents* a *Reset table layout*,
+- **zapamatanie** - rozlozenie kazdej tabulky sa uklada do `config/table_layouts.json`.
+
+Sirsie tabulky (kluby, clenovia) maju menej podstatne stlpce (ulica, PSC, telefon,
+web) **skryte v predvolenom nastavani**, aby sa tabulka zmestila na obrazovku a
+stlpec *Actions* bol dostupny bez horizontalneho skrolovania. Zapnut sa daju
+jednym klikom v menu *Columns*.
+
+Stlpce su v kode adresovane **stabilnym klucom**, nie poziciou, takze zmena
+poradia alebo skrytie stlpca nikdy neposle upravu do nespravneho pola.
+
+## Testy
 ```bash
 PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m unittest discover -s tests -v
 ```

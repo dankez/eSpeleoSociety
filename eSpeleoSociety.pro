@@ -2,6 +2,7 @@ FORMS    =
 SOURCES  = main.py \
            utils.py \
            setup.py \
+           ui_table.py \
            navigation_panel.py \
            views/clubs_list_view.py \
            views/ecp_requests_view.py \
