@@ -16,6 +16,7 @@ from datetime import date
 from babel import Locale, UnknownLocaleError # Import for Babel
 from babel.core import localedata # Changed import
 from config import secret_manager
+from app_paths import ensure_config_dir, resolve_config_file
 from gcs_auth import resolve_gcs_credentials
 from PyQt5.QtWidgets import QMainWindow, QApplication # Added for type hinting, access to status_bar and QApplication
 from wallet_pass import build_wallet_barcode_from_request
@@ -24,7 +25,7 @@ if TYPE_CHECKING:
     from model import Member, Club
 
 
-CONFIG_FILE_PATH = 'config.properties'
+CONFIG_FILE_PATH = resolve_config_file('config.properties')
 SUPPORTED_LOCALES_FILE_PATH = os.path.join('translate', 'supported_locales.ini')
 
 _app_config_cache = None
@@ -65,6 +66,7 @@ def load_all_configs():
             'iban': '' # Default empty IBAN
         }
         try:
+            ensure_config_dir()
             with open(CONFIG_FILE_PATH, 'w', encoding='utf-8') as configfile:
                 _app_config_cache.write(configfile)
             print(f"INFO: Created default '{CONFIG_FILE_PATH}'.")
@@ -697,6 +699,7 @@ def save_app_settings(
     _app_config_cache['DEFAULT']['iban'] = iban.strip().upper()
 
     try:
+        ensure_config_dir()
         with open(CONFIG_FILE_PATH, 'w', encoding='utf-8') as configfile:
             _app_config_cache.write(configfile)
         print(f"INFO: Application settings saved to '{CONFIG_FILE_PATH}'.")

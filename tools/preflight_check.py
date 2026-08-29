@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import re
+import subprocess
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -205,10 +206,26 @@ def check_secrets() -> Result:
         if path.exists():
             result.error(f"{name} exists in the repository root and must never be committed")
 
+    # config/ holds machine-specific configuration and must stay untracked.
+    tracked_config = subprocess.run(
+        ["git", "ls-files", "config/"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    if tracked_config:
+        for entry in tracked_config.splitlines():
+            result.error(f"{entry} is tracked but config/ must be git-ignored")
+
+    # An __init__.py in config/ turns the directory into a package that shadows
+    # the top-level config.py module and breaks every `from config import ...`.
+    if (REPO_ROOT / "config" / "__init__.py").exists():
+        result.error("config/__init__.py shadows config.py and breaks all imports of it")
+
     key_pattern = re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----")
     for path in REPO_ROOT.rglob("*"):
         parts = set(path.relative_to(REPO_ROOT).parts)
-        if parts & {".git", ".venv", "build", "__pycache__"}:
+        if parts & {".git", ".venv", "build", "__pycache__", "config"}:
             continue
         if not path.is_file() or path.suffix in {".png", ".jpg", ".ico", ".qm", ".pdf"}:
             continue

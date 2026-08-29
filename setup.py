@@ -3,10 +3,12 @@ import os
 from PyQt5.QtWidgets import ( QApplication,
     QWidget, QLabel, QLineEdit, QPushButton, QVBoxLayout, QHBoxLayout,
     QComboBox, QFormLayout, QMessageBox, QDialog, QDialogButtonBox, QGridLayout,
-    QFileDialog,
+    QFileDialog, QInputDialog,
 ) # Add QFont
 from PyQt5.QtCore import Qt, QTimer
 from config import secret_manager # Import the global secret_manager
+from app_paths import ensure_config_dir
+from secrets_export import write_secrets_export
 from PyQt5.QtGui import QIcon
 
 SECRET_SETUP_FIELDS = [
@@ -185,9 +187,13 @@ class SecretSetupGUI(QWidget):
                     entry.setEchoMode(QLineEdit.Password)
                 grid.addWidget(label, row, 0)
                 if key == "credentials_json":
+                    # Leave room for the import button inside the same grid column.
+                    entry.setMinimumWidth(300)
                     field_row = QHBoxLayout()
+                    field_row.setContentsMargins(0, 0, 0, 0)
                     field_row.addWidget(entry)
                     browse_button = QPushButton(self.tr("Import JSON key file..."))
+                    browse_button.setFixedHeight(32)
                     browse_button.clicked.connect(self.import_credentials_json)
                     field_row.addWidget(browse_button)
                     grid.addLayout(field_row, row, 1)
@@ -198,7 +204,108 @@ class SecretSetupGUI(QWidget):
 
         self.save_button = QPushButton(self.tr("Save"))
         self.save_button.clicked.connect(self.save_secrets)
-        layout.addWidget(self.save_button)
+
+        self.export_button = QPushButton(self.tr("Export to TXT/CSV..."))
+        self.export_button.setToolTip(
+            self.tr("Exports all values, including the masked ones, in plaintext. Requires the PIN again.")
+        )
+        self.export_button.clicked.connect(self.export_secrets)
+
+        button_row = QHBoxLayout()
+        button_row.addWidget(self.save_button)
+        button_row.addWidget(self.export_button)
+        layout.addLayout(button_row)
+
+        self.setLayout(layout)
+
+    def _collect_entry_values(self):
+        return {key: self._get_entry_value(entry) for key, entry in self.entries.items()}
+
+    def _reauthenticate(self):
+        """Ask for the PIN again before revealing masked values.
+
+        Verification does not touch secret_manager.secrets, so unsaved edits in
+        the form survive. Returns True when the user proved knowledge of the PIN.
+        """
+        if not os.path.exists(secret_manager.properties_file):
+            QMessageBox.warning(
+                self,
+                self.tr("Warning"),
+                self.tr("Save the secrets first - there is no encrypted file to verify the PIN against."),
+            )
+            return False
+
+        pin, accepted = QInputDialog.getText(
+            self,
+            self.tr("Confirm PIN"),
+            self.tr("Enter the PIN again to export secrets in plaintext:"),
+            QLineEdit.Password,
+        )
+        if not accepted:
+            return False
+
+        if not secret_manager.verify_pin(pin):
+            QMessageBox.critical(self, self.tr("Error"), self.tr("Incorrect PIN!"))
+            return False
+        return True
+
+    def export_secrets(self):
+        """Export every configured value - masked fields included - to TXT/CSV."""
+        if not self._reauthenticate():
+            return
+
+        confirm = QMessageBox.warning(
+            self,
+            self.tr("Plaintext export"),
+            self.tr(
+                "The exported file will contain passwords, private keys and API "
+                "credentials in plaintext.\n\nStore it securely, never commit it, "
+                "and delete it when you no longer need it.\n\nContinue?"
+            ),
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if confirm != QMessageBox.Yes:
+            return
+
+        filename, selected_filter = QFileDialog.getSaveFileName(
+            self,
+            self.tr("Export secrets"),
+            os.path.join(ensure_config_dir(), "espeleo-secrets.txt"),
+            self.tr("Text file (*.txt);;CSV file (*.csv)"),
+        )
+        if not filename:
+            return
+
+        export_format = "csv" if "csv" in selected_filter.lower() else "txt"
+        if not os.path.splitext(filename)[1]:
+            filename = f"{filename}.{export_format}"
+        elif os.path.splitext(filename)[1].lower() == ".csv":
+            export_format = "csv"
+        elif os.path.splitext(filename)[1].lower() == ".txt":
+            export_format = "txt"
+
+        try:
+            write_secrets_export(
+                filename,
+                self._collect_entry_values(),
+                SECRET_SETUP_FIELDS,
+                export_format,
+            )
+        except OSError as exc:
+            QMessageBox.critical(
+                self,
+                self.tr("Error"),
+                self.tr("Could not write the export file: %s") % exc,
+            )
+            return
+
+        QMessageBox.information(
+            self,
+            self.tr("Exported"),
+            self.tr("Secrets were exported to:\n%s\n\nThe file is readable only by your user account.")
+            % filename,
+        )
 
     def import_credentials_json(self):
         """Import a GCP service account key file so its content lives inside
@@ -244,9 +351,6 @@ class SecretSetupGUI(QWidget):
             self.tr("Imported"),
             self.tr("The key content was loaded. Click Save to store it encrypted."),
         )
-
-
-        self.setLayout(layout)
 
     def load_secrets(self):
         if secret_manager.secrets:

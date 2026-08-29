@@ -20,13 +20,41 @@ Projekt je momentalne v prechodnom stave: desktop klient stale pristupuje priamo
 
 Ak neexistuje zasifrovany subor secrets, aplikacia najprv otvori setup dialog pre DB, Google Cloud a eCP podpisovacie nastavenia.
 
+### Konfiguracia (adresar `config/`)
+
+Vsetka konfiguracia specificka pre pouzivatela/pocitac je v adresari `config/`,
+ktory je **cely v `.gitignore`** - nikdy sa necommituje:
+
+| Subor | Obsah |
+|---|---|
+| `config/secrets.properties` | zasifrovane tajomstva (DB, GCP, eCP podpisovy kluc), odomyka sa PIN-om |
+| `config/config.properties` | nastavenia aplikacie (jazyk, bankove udaje, ...) |
+
+Staticke zdroje potrebne pre cerstvy klon (`translate/`, `docs/api/openapi.yaml`,
+`.github/workflows/`) zostavaju na svojom mieste a su naďalej verzovane.
+
+Pri prvom spusteni po tejto zmene sa `secrets.properties` a `config.properties`
+z korena projektu **automaticky presunu** do `config/` (`app_paths.py`), takze
+sa nestratia nastavenia ani PIN.
+
+> `config/` zamerne **nie je** Python balik. `config/__init__.py` by zatienil
+> modul `config.py` a rozbil kazdy `from config import secret_manager`.
+> Strazi to `tools/preflight_check.py` aj `tests/test_config_layout.py`.
+
+### Export secrets do TXT/CSV
+
+Tlacidlo **"Export to TXT/CSV..."** v setup dialogu vypise vsetky tajomstva
+vratane maskovanych poli v citatelnej podobe. Pred exportom si znovu vypyta
+PIN a subor zapise s pravami `0600`. Ide o **plaintext** - drz ho mimo repozitara
+a po pouziti ho zmaz.
+
 ### Google Cloud Storage credentials (nahravanie fotiek/log)
 
 Pole `JSON credentials` v setup dialogu (`setup.py`) prijima **obsah** GCP
 service account kluca (JSON subor stiahnuty z Google Cloud Console ->
 IAM & Admin -> Service Accounts -> Keys -> Add key -> JSON), nie iba cestu k
 nemu. Pouzi tlacidlo **"Import JSON key file..."** a vyber stiahnuty `.json`
-subor - jeho obsah sa ulozi priamo v zasifrovanom `secrets.properties`, takze
+subor - jeho obsah sa ulozi priamo v zasifrovanom `config/secrets.properties`, takze
 uz nemoze zmiznut pri prenose na iny pocitac (predosla nezhoda: povodne sa
 ukladala iba cesta/nazov suboru, ktory bez fyzickeho .json vedla k
 `DefaultCredentialsError` / "credentials file was not found").
