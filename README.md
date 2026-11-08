@@ -11,6 +11,7 @@ Projekt je momentalne v prechodnom stave: desktop klient stale pristupuje priamo
 - [Signed Offline eCP QR](docs/ecp-signing.md) popisuje offline overitelne QR pre eCP.
 - [Database Bootstrap](database/README.md) popisuje lokalnu PostgreSQL schemu a migracie.
 - [Fix Log](fix.md) sumarizuje doteraz vykonane opravy a aktualny stav.
+- [Webove rozhranie](web/README.md) je citacia (read-only) administracia v style Tabler nad `/api/v1`: prehlad, clenovia, kluby, eCP ziadosti, notifikacie a reporty.
 
 ## Spustenie
 

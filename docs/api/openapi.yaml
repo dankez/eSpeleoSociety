@@ -88,7 +88,164 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/Forbidden"
+  /members:
+    get:
+      summary: List members
+      description: >-
+        Requires role `admin` or `club_president`. A `club_president` only sees members affiliated
+        with the clubs in the token `club_ids` claim; requesting a different `clubId` returns 403.
+        Directory stubs are excluded. Birth date, address, eCP hash and portrait are never returned.
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - name: q
+          in: query
+          required: false
+          description: Case-insensitive search over display name, email, phone and primary club name (also accepted as `filter`).
+          schema:
+            type: string
+            maxLength: 100
+        - name: clubId
+          in: query
+          required: false
+          schema:
+            type: integer
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [applicant, active, inactive, blocked]
+        - name: paid
+          in: query
+          required: false
+          description: Filter by whether the current-year membership fee was paid.
+          schema:
+            type: string
+            enum: ["true", "false"]
+      responses:
+        "200":
+          description: Paginated member list.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, nextCursor]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/MemberListItem"
+                  nextCursor:
+                    type: string
+                    nullable: true
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+  /stats:
+    get:
+      summary: Dashboard statistics
+      description: Requires role `admin`. Counts exclude directory stubs.
+      responses:
+        "200":
+          description: Aggregated counts for the current fee year.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Stats"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /ecp-requests:
+    get:
+      summary: List eCP requests
+      description: Requires role `admin`. Read-only; the storage photo reference is intentionally not exposed.
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [pending, approved, rejected]
+      responses:
+        "200":
+          description: Paginated eCP requests, newest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, nextCursor]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/EcpRequestListItem"
+                  nextCursor:
+                    type: string
+                    nullable: true
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+  /notifications:
+    get:
+      summary: List notifications
+      description: Requires role `admin`. Returns at most the 200 most recent notifications.
+      responses:
+        "200":
+          description: Notifications, newest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Notification"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
   /members/{memberId}:
+    get:
+      summary: Get member detail
+      description: >-
+        Requires role `admin`, or `club_president` when the member belongs to one of the caller's
+        `club_ids`. Includes the postal address but never birth date or eCP hash. A caller without
+        access receives 403 for both missing and foreign members, so existence is not disclosed.
+      parameters:
+        - name: memberId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Member detail.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MemberDetail"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
     patch:
       summary: Update an administrative member profile slice
       description: Requires role `admin`, or `club_president` when the target member belongs to one of the caller's `club_ids`. The endpoint intentionally excludes birth date, address, eCP hashes, and portrait fields.
@@ -265,8 +422,12 @@ components:
   schemas:
     Club:
       type: object
-      required: [id, name, street, city, zipCode, country, email, phone, webpage, presidentName, memberCount]
+      required: [id, name, street, city, zipCode, country, email, phone, webpage, presidentName, memberCount, foundationDate]
       properties:
+        foundationDate:
+          type: string
+          format: date
+          nullable: true
         id:
           type: integer
         name:
@@ -316,6 +477,114 @@ components:
           type: boolean
         hasEcp:
           type: boolean
+    MemberListItem:
+      allOf:
+        - $ref: "#/components/schemas/Member"
+        - type: object
+          required: [primaryClubName, hasPaidCurrentYearFee, discountedMembership]
+          properties:
+            primaryClubName:
+              type: string
+            hasPaidCurrentYearFee:
+              type: boolean
+            discountedMembership:
+              type: boolean
+    MemberDetail:
+      allOf:
+        - $ref: "#/components/schemas/MemberListItem"
+        - type: object
+          required: [address, portraitUrl, ecpValidUntil]
+          properties:
+            address:
+              type: object
+              required: [street, city, zipCode, country]
+              properties:
+                street:
+                  type: string
+                city:
+                  type: string
+                zipCode:
+                  type: string
+                country:
+                  type: string
+            portraitUrl:
+              type: string
+              nullable: true
+            ecpValidUntil:
+              type: string
+              format: date
+              nullable: true
+    Stats:
+      type: object
+      required: [year, memberCount, clubCount, paidMemberCount, unpaidMemberCount, pendingEcpRequestCount, membersPerClub]
+      properties:
+        year:
+          type: integer
+        memberCount:
+          type: integer
+        clubCount:
+          type: integer
+        paidMemberCount:
+          type: integer
+        unpaidMemberCount:
+          type: integer
+        pendingEcpRequestCount:
+          type: integer
+        membersPerClub:
+          type: array
+          items:
+            type: object
+            required: [id, name, memberCount, paidMemberCount]
+            properties:
+              id:
+                type: integer
+              name:
+                type: string
+              memberCount:
+                type: integer
+              paidMemberCount:
+                type: integer
+    EcpRequestListItem:
+      type: object
+      required: [id, memberId, memberName, clubName, status, requestDate]
+      properties:
+        id:
+          type: integer
+        memberId:
+          type: integer
+        memberName:
+          type: string
+        clubName:
+          type: string
+        status:
+          type: string
+          enum: [pending, approved, rejected]
+        requestDate:
+          type: string
+          format: date
+          nullable: true
+    Notification:
+      type: object
+      required: [id, createdAt, text, validFrom, validTo, status]
+      properties:
+        id:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+          nullable: true
+        text:
+          type: string
+        validFrom:
+          type: string
+          format: date-time
+          nullable: true
+        validTo:
+          type: string
+          format: date-time
+          nullable: true
+        status:
+          type: string
     MemberUpdate:
       type: object
       minProperties: 1

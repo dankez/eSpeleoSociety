@@ -51,6 +51,14 @@ class MemberRecord:
     is_president: bool
     has_paid_current_year_fee: bool = False
     is_directory_stub: bool = False
+    primary_club_name: str = ""
+    discounted_membership: bool = False
+    street: str = ""
+    city: str = ""
+    zip_code: str = ""
+    country: str = ""
+    portrait_url: str | None = None
+    ecp_valid_until: object = None
 
 
 class DatabaseApiRepository:
@@ -186,6 +194,200 @@ class DatabaseApiRepository:
         members = [self._member_from_row(row) for row in page_rows]
         next_cursor = self._member_cursor_from_row(page_rows[-1]) if len(rows) > limit and page_rows else None
         return members, next_cursor
+
+    def list_members(
+        self,
+        limit: int,
+        cursor=None,
+        filter_text: str = "",
+        club_ids=None,
+        status: str | None = None,
+        paid: bool | None = None,
+    ):
+        """Keyset-paginated member directory.
+
+        ``club_ids=None`` means unscoped (admin); an empty collection means the caller
+        has no clubs and therefore sees nothing.
+        """
+        if club_ids is not None and not club_ids:
+            return [], None
+        year = date.today().year
+        params = [year, decode_id_cursor(cursor)]
+        clauses = []
+        if club_ids is not None:
+            clauses.append(
+                "AND EXISTS (SELECT 1 FROM club_affiliations scope_ca "
+                "WHERE scope_ca.member_id = m.member_id AND scope_ca.club_id = ANY(%s))"
+            )
+            params.append(sorted(int(club_id) for club_id in club_ids))
+        if status:
+            clauses.append("AND m.member_status = %s")
+            params.append(status)
+        if paid is not None:
+            clauses.append(
+                "AND EXISTS (SELECT 1 FROM membership_fees pf "
+                "WHERE pf.member_id = m.member_id AND pf.year = %s) = %s"
+            )
+            params.extend([year, paid])
+        filter_value = self._like_filter(filter_text)
+        if filter_value:
+            clauses.append(
+                """AND (
+                    concat_ws(' ', NULLIF(m.title_prefix, ''), m.first_name, m.last_name, NULLIF(m.title_suffix, '')) ILIKE %s ESCAPE '\\'
+                 OR COALESCE(m.email, '') ILIKE %s ESCAPE '\\'
+                 OR COALESCE(m.phone, '') ILIKE %s ESCAPE '\\'
+                 OR COALESCE(pc.club_name, '') ILIKE %s ESCAPE '\\'
+              )"""
+            )
+            params.extend([filter_value] * 4)
+        params.append(limit + 1)
+        rows = self.db_manager._fetch_all(
+            f"""
+            SELECT
+                m.member_id, m.member_status, m.title_prefix, m.first_name, m.last_name, m.title_suffix,
+                m.phone, m.email, m.ecp_hash, m.is_directory_stub, m.discounted_membership,
+                primary_ca.club_id AS primary_club_id,
+                primary_ca.role AS club_role,
+                pc.club_name AS primary_club_name,
+                EXISTS (
+                    SELECT 1 FROM membership_fees mf WHERE mf.member_id = m.member_id AND mf.year = %s
+                ) AS has_paid_current_year_fee
+            FROM members m
+            LEFT JOIN LATERAL (
+                SELECT ca.club_id, ca.role
+                FROM club_affiliations ca
+                WHERE ca.member_id = m.member_id AND ca.is_primary_club = TRUE
+                LIMIT 1
+            ) primary_ca ON TRUE
+            LEFT JOIN clubs pc ON pc.club_id = primary_ca.club_id
+            WHERE m.member_id > %s
+              AND m.is_directory_stub = FALSE
+            {" ".join(clauses)}
+            ORDER BY m.member_id
+            LIMIT %s;
+            """,
+            tuple(params),
+        )
+        page_rows = rows[:limit]
+        members = [self._member_from_row(row) for row in page_rows]
+        next_cursor = encode_id_cursor(members[-1].member_id) if len(rows) > limit and members else None
+        return members, next_cursor
+
+    def fetch_member_detail(self, member_id: int):
+        row = self.db_manager._fetch_one(
+            """
+            SELECT
+                m.member_id, m.member_status, m.title_prefix, m.first_name, m.last_name, m.title_suffix,
+                m.phone, m.email, m.ecp_hash, m.is_directory_stub, m.discounted_membership,
+                m.street, m.city, m.zip_code, m.country, m.portrait_url,
+                primary_ca.club_id AS primary_club_id,
+                primary_ca.role AS club_role,
+                pc.club_name AS primary_club_name,
+                er.valid_until AS ecp_valid_until,
+                EXISTS (
+                    SELECT 1 FROM membership_fees mf WHERE mf.member_id = m.member_id AND mf.year = %s
+                ) AS has_paid_current_year_fee
+            FROM members m
+            LEFT JOIN LATERAL (
+                SELECT ca.club_id, ca.role
+                FROM club_affiliations ca
+                WHERE ca.member_id = m.member_id AND ca.is_primary_club = TRUE
+                LIMIT 1
+            ) primary_ca ON TRUE
+            LEFT JOIN clubs pc ON pc.club_id = primary_ca.club_id
+            LEFT JOIN ecp_records er ON er.ecp_hash = m.ecp_hash
+            WHERE m.member_id = %s
+            LIMIT 1;
+            """,
+            (date.today().year, member_id),
+        )
+        return self._member_from_row(row) if row else None
+
+    def fetch_dashboard_stats(self):
+        year = date.today().year
+        counts = self.db_manager._fetch_one(
+            """
+            SELECT
+                (SELECT COUNT(*) FROM members WHERE is_directory_stub = FALSE) AS member_count,
+                (SELECT COUNT(*) FROM clubs) AS club_count,
+                (SELECT COUNT(DISTINCT mf.member_id)
+                   FROM membership_fees mf
+                   JOIN members pm ON pm.member_id = mf.member_id
+                  WHERE mf.year = %s AND pm.is_directory_stub = FALSE) AS paid_member_count,
+                (SELECT COUNT(*) FROM ecp_requests WHERE status = 'pending') AS pending_ecp_request_count;
+            """,
+            (year,),
+        ) or {}
+        per_club = self.db_manager._fetch_all(
+            """
+            SELECT c.club_id, c.club_name AS name,
+                   COUNT(ca.member_id) AS member_count,
+                   COUNT(ca.member_id) FILTER (
+                       WHERE EXISTS (
+                           SELECT 1 FROM membership_fees mf
+                           WHERE mf.member_id = ca.member_id AND mf.year = %s
+                       )
+                   ) AS paid_member_count
+            FROM clubs c
+            LEFT JOIN club_affiliations ca ON ca.club_id = c.club_id
+                 AND EXISTS (
+                     SELECT 1 FROM members cm
+                     WHERE cm.member_id = ca.member_id AND cm.is_directory_stub = FALSE
+                 )
+            GROUP BY c.club_id, c.club_name
+            ORDER BY member_count DESC, c.club_name;
+            """,
+            (year,),
+        )
+        return {
+            "year": year,
+            "member_count": counts.get("member_count", 0),
+            "club_count": counts.get("club_count", 0),
+            "paid_member_count": counts.get("paid_member_count", 0),
+            "pending_ecp_request_count": counts.get("pending_ecp_request_count", 0),
+            "members_per_club": [dict(row) for row in per_club],
+        }
+
+    def list_ecp_requests(self, limit: int, cursor=None, status: str | None = None):
+        params = []
+        clauses = []
+        last_id = decode_id_cursor(cursor)
+        if last_id:
+            clauses.append("AND r.request_id < %s")
+            params.append(last_id)
+        if status:
+            clauses.append("AND r.status = %s")
+            params.append(status)
+        params.append(limit + 1)
+        rows = self.db_manager._fetch_all(
+            f"""
+            SELECT r.request_id, r.member_id, r.status, r.request_date,
+                   m.title_prefix, m.first_name, m.last_name, m.title_suffix,
+                   pc.club_name AS primary_club_name
+            FROM ecp_requests r
+            JOIN members m ON m.member_id = r.member_id
+            LEFT JOIN club_affiliations pca ON pca.member_id = m.member_id AND pca.is_primary_club = TRUE
+            LEFT JOIN clubs pc ON pc.club_id = pca.club_id
+            WHERE TRUE
+            {" ".join(clauses)}
+            ORDER BY r.request_id DESC
+            LIMIT %s;
+            """,
+            tuple(params),
+        )
+        page_rows = rows[:limit]
+        next_cursor = encode_id_cursor(page_rows[-1]["request_id"]) if len(rows) > limit and page_rows else None
+        return page_rows, next_cursor
+
+    def list_notifications(self):
+        return self.db_manager._fetch_all(
+            """
+            SELECT notification_id, created_at, text, valid_from, valid_to, status
+            FROM notifications
+            ORDER BY created_at DESC
+            LIMIT 200;
+            """
+        )
 
     def member_belongs_to_any_club(self, member_id: int, club_ids) -> bool:
         normalized_club_ids = sorted({self._int_value(club_id, 0) for club_id in club_ids if self._int_value(club_id, 0) > 0})
@@ -509,6 +711,14 @@ class DatabaseApiRepository:
             is_president=row["club_role"] == "president",
             has_paid_current_year_fee=bool(row["has_paid_current_year_fee"]),
             is_directory_stub=bool(row["is_directory_stub"]),
+            primary_club_name=row.get("primary_club_name") or "",
+            discounted_membership=bool(row.get("discounted_membership")),
+            street=row.get("street") or "",
+            city=row.get("city") or "",
+            zip_code=row.get("zip_code") or "",
+            country=row.get("country") or "",
+            portrait_url=row.get("portrait_url"),
+            ecp_valid_until=row.get("ecp_valid_until"),
         )
 
     def _int_value(self, value, default: int) -> int:
