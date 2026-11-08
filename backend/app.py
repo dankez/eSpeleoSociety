@@ -9,13 +9,27 @@ from backend.audit import AuditEvent
 from backend.auth import AuthError, authenticate_bearer, require_any_role
 from backend.pagination import InvalidCursorError, paginate_items, parse_limit
 from backend.repository import DuplicatePendingEcpRequestError
-from backend.serializers import club_to_api, ecp_verification_to_api, member_profile_to_api, member_to_api
+from backend.serializers import (
+    club_to_api,
+    ecp_request_to_api,
+    ecp_verification_to_api,
+    member_detail_to_api,
+    member_list_item_to_api,
+    member_profile_to_api,
+    member_to_api,
+    notification_to_api,
+    stats_to_api,
+)
 
 
 logger = logging.getLogger(__name__)
 
 API_VERSION = "v1"
 MAX_ECP_REQUEST_PHOTO_BYTES = 5 * 1024 * 1024
+MEMBER_STATUSES = frozenset({"applicant", "active", "inactive", "blocked"})
+ECP_REQUEST_STATUSES = frozenset({"pending", "approved", "rejected"})
+ADMIN_ROLES = {"admin"}
+STAFF_ROLES = {"admin", "club_president"}
 
 
 @dataclass(frozen=True)
@@ -116,8 +130,10 @@ class ApiApp:
                             if club_members_id is not None:
                                 response = self._list_club_members(club_members_id, query, context)
                             else:
-                                response = error_response(404, "not_found", "Endpoint not found.", request_id)
-                                error_code = "not_found"
+                                response = self._route_admin(method, path, query, context, request_id)
+                                if response is None:
+                                    response = error_response(404, "not_found", "Endpoint not found.", request_id)
+                                    error_code = "not_found"
         except AuthError as exc:
             error_code = exc.code
             response = error_response(exc.status_code, exc.code, exc.message, request_id)
@@ -169,6 +185,10 @@ class ApiApp:
             return "/api/v1/clubs/{club_id}/members"
         if self._match_ecp_verify_path(method, path) is not None:
             return "/api/v1/ecp/verify/{token}"
+        if method == "GET" and path in self.ADMIN_STATIC_ROUTES:
+            return path
+        if self._match_member_detail_path(method, path) is not None:
+            return "/api/v1/members/{member_id}"
         return "unmatched"
 
     def _list_clubs(self, query: dict, context) -> ApiResponse:
@@ -329,6 +349,111 @@ class ApiApp:
                 "nextCursor": next_cursor,
             },
         )
+
+    ADMIN_STATIC_ROUTES = frozenset({
+        "/api/v1/members",
+        "/api/v1/stats",
+        "/api/v1/ecp-requests",
+        "/api/v1/notifications",
+    })
+
+    def _route_admin(self, method: str, path: str, query: dict, context, request_id: str):
+        if method != "GET":
+            return None
+        if path == "/api/v1/members":
+            return self._list_members(query, context, request_id)
+        if path == "/api/v1/stats":
+            return self._get_stats(context)
+        if path == "/api/v1/ecp-requests":
+            return self._list_ecp_requests(query, context, request_id)
+        if path == "/api/v1/notifications":
+            return self._list_notifications(context)
+        member_id = self._match_member_detail_path(method, path)
+        if member_id is not None:
+            return self._get_member_detail(member_id, context, request_id)
+        return None
+
+    def _list_members(self, query: dict, context, request_id: str) -> ApiResponse:
+        require_any_role(context, STAFF_ROLES)
+        status = query.get("status") or None
+        if status is not None and status not in MEMBER_STATUSES:
+            return error_response(422, "invalid_member_status", "Unsupported member status.", request_id)
+        paid = None
+        raw_paid = query.get("paid")
+        if raw_paid not in (None, ""):
+            if raw_paid not in ("true", "false"):
+                return error_response(422, "invalid_paid_filter", "paid must be 'true' or 'false'.", request_id)
+            paid = raw_paid == "true"
+
+        club_ids = None
+        raw_club_id = query.get("clubId")
+        if raw_club_id not in (None, ""):
+            try:
+                club_ids = {int(raw_club_id)}
+            except ValueError:
+                return error_response(422, "invalid_club_id", "clubId must be an integer.", request_id)
+
+        if not context.has_role("admin"):
+            allowed = set(context.club_ids)
+            if club_ids is not None and not club_ids <= allowed:
+                raise AuthError(403, "forbidden", "Authenticated caller is not allowed to access this club.")
+            club_ids = club_ids if club_ids is not None else allowed
+
+        page, next_cursor = self.repository.list_members(
+            limit=parse_limit(query.get("limit")),
+            cursor=query.get("cursor"),
+            filter_text=query.get("filter") or query.get("q") or "",
+            club_ids=club_ids,
+            status=status,
+            paid=paid,
+        )
+        return json_response(
+            200,
+            {"items": [member_list_item_to_api(member) for member in page], "nextCursor": next_cursor},
+        )
+
+    def _get_member_detail(self, member_id: int, context, request_id: str) -> ApiResponse:
+        require_any_role(context, STAFF_ROLES)
+        if not context.has_role("admin") and not self.repository.member_belongs_to_any_club(member_id, context.club_ids):
+            raise AuthError(403, "forbidden", "Authenticated caller is not allowed to access this member.")
+        member = self.repository.fetch_member_detail(member_id)
+        if not member:
+            return error_response(404, "member_not_found", "Member was not found.", request_id)
+        return json_response(200, member_detail_to_api(member))
+
+    def _get_stats(self, context) -> ApiResponse:
+        require_any_role(context, ADMIN_ROLES)
+        return json_response(200, stats_to_api(self.repository.fetch_dashboard_stats()))
+
+    def _list_ecp_requests(self, query: dict, context, request_id: str) -> ApiResponse:
+        require_any_role(context, ADMIN_ROLES)
+        status = query.get("status") or None
+        if status is not None and status not in ECP_REQUEST_STATUSES:
+            return error_response(422, "invalid_ecp_request_status", "Unsupported eCP request status.", request_id)
+        page, next_cursor = self.repository.list_ecp_requests(
+            limit=parse_limit(query.get("limit")),
+            cursor=query.get("cursor"),
+            status=status,
+        )
+        return json_response(200, {"items": [ecp_request_to_api(row) for row in page], "nextCursor": next_cursor})
+
+    def _list_notifications(self, context) -> ApiResponse:
+        require_any_role(context, ADMIN_ROLES)
+        return json_response(200, {"items": [notification_to_api(row) for row in self.repository.list_notifications()]})
+
+    def _match_member_detail_path(self, method: str, path: str) -> int | None:
+        if method != "GET":
+            return None
+        prefix = "/api/v1/members/"
+        if not path.startswith(prefix):
+            return None
+        raw_id = path[len(prefix):].strip("/")
+        if not raw_id or "/" in raw_id:
+            return None
+        try:
+            return int(raw_id)
+        except ValueError:
+            return None
 
     def _match_club_members_path(self, method: str, path: str) -> int | None:
         if method != "GET":

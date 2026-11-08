@@ -225,7 +225,7 @@ def check_secrets() -> Result:
     key_pattern = re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----")
     for path in REPO_ROOT.rglob("*"):
         parts = set(path.relative_to(REPO_ROOT).parts)
-        if parts & {".git", ".venv", "build", "__pycache__", "config"}:
+        if parts & {".git", ".venv", "build", "__pycache__", "config", "node_modules", "dist"}:
             continue
         if not path.is_file() or path.suffix in {".png", ".jpg", ".ico", ".qm", ".pdf"}:
             continue
